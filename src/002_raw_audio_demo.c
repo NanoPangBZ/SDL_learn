@@ -8,18 +8,23 @@
  * @param audio_frame_buffer 音频帧缓冲
  * @param sample_rate 采样率
  * @param sine_freq_hz 正弦波频率
- * @param position 正弦波位置
+ * @param position 当前相位（弧度）
  * @param frame_point_count 帧点数
- * @return 最后一点的相位
+ * @return 最后一点之后的相位（弧度，已限制在 [0, 2π)）
 */
-static float fill_sine_audio_frame_buffer( float *audio_frame_buffer , int sample_rate , int sine_freq_hz , float position , uint32_t frame_point_count )
+static float fill_sine_audio_frame_buffer(float *audio_frame_buffer, int sample_rate,
+                                          int sine_freq_hz, float position,
+                                          uint32_t frame_point_count)
 {
+    const float phase_delta = 2.0f * SDL_PI_F * (float)sine_freq_hz / (float)sample_rate;
     float *p = audio_frame_buffer;
-    for ( uint32_t i = 0; i < frame_point_count; i++ )
-    {
-        *p = SDL_sinf( position * 2.0f * SDL_PI_F );
-        p++;
-        position += (float)sine_freq_hz / (float)sample_rate;
+
+    for (uint32_t i = 0; i < frame_point_count; i++) {
+        *p++ = SDL_sinf(position);
+        position += phase_delta;
+        if (position >= 2.0f * SDL_PI_F) {
+            position -= 2.0f * SDL_PI_F;
+        }
     }
 
     return position;
@@ -64,7 +69,7 @@ int main(int argc, char *argv[])
     SDL_ResumeAudioStreamDevice(stream);
 
     /* 音频帧缓冲 */
-    float audio_frame_buffer[ 44100 ];
+    float audio_frame_buffer[ 4410 ];
     float sine_position = 0;
 
     while (running) {
