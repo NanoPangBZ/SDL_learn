@@ -1,5 +1,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <math.h>
 
 int main(int argc, char *argv[])
 {
@@ -22,6 +23,37 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* 刷黑背景 */
+    // 1、设置渲染器颜色
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    // 2、清空渲染器
+    SDL_RenderClear(renderer);
+
+    /* 画一个圆到正中心 */
+    // 1、设置渲染器颜色
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    // 2、用横线画实心圆
+    uint32_t radius = 100;
+    int32_t cx = 400;
+    int32_t cy = 250;
+    for (uint32_t line = 0; line < radius * 2; line++)
+    {
+        // 计算弦长: 2 * sqrt(r² - dy²)
+        int32_t dy = (int32_t)line - (int32_t)radius;
+        int32_t chord = 2 * (int32_t)sqrt((double)(radius * radius) - (double)(dy * dy));
+
+        // 弦起始和结束点（相对窗口中心）
+        int32_t start_x = cx - chord / 2;
+        int32_t end_x = cx + chord / 2;
+        int32_t y = cy - (int32_t)radius + (int32_t)line;
+
+        // 画弦
+        SDL_RenderLine(renderer, (float)start_x, (float)y, (float)end_x, (float)y);
+    }
+
+    /* 提交渲染 */
+    SDL_RenderPresent(renderer);
+
     while (running) {
         SDL_Event event;
 
@@ -33,9 +65,6 @@ int main(int argc, char *argv[])
             }
         }
 
-        SDL_SetRenderDrawColor(renderer, 20, 38, 46, 255);
-        SDL_RenderClear(renderer);
-        SDL_RenderPresent(renderer);
         SDL_Delay(16);
     }
 
