@@ -81,7 +81,7 @@ int main(int argc, char *argv[])
         /* 当前SDL音频流中剩余的音频小于一帧的一半，则提交新的音频帧缓冲 */
         if (SDL_GetAudioStreamQueued(stream) < (spec.freq * (int)sizeof(float)) / 2)
         {
-            sine_position = fill_sine_audio_frame_buffer( audio_frame_buffer , spec.freq , 100 , sine_position , spec.freq );
+            sine_position = fill_sine_audio_frame_buffer( audio_frame_buffer , spec.freq , 100 , sine_position , sizeof(audio_frame_buffer) / sizeof(float) );
             SDL_PutAudioStreamData(stream, audio_frame_buffer, (int)sizeof(audio_frame_buffer));
         }
 
