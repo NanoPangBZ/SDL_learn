@@ -16,8 +16,32 @@ set(SDL_UNINSTALL OFF CACHE BOOL "Generate SDL uninstall target" FORCE)
 
 add_subdirectory(SDL EXCLUDE_FROM_ALL)
 
-add_executable(sdl_hello src/main.c)
-target_link_libraries(sdl_hello PRIVATE SDL3::SDL3-static)
+# Build SDL_ttf and FreeType into the executable. HarfBuzz and SVG support are
+# unnecessary for this simple text demo, so disabling them keeps the build small.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+set(SDLTTF_VENDORED ON CACHE BOOL "Use SDL_ttf vendored dependencies" FORCE)
+set(SDLTTF_HARFBUZZ OFF CACHE BOOL "Use HarfBuzz text shaping" FORCE)
+set(SDLTTF_PLUTOSVG OFF CACHE BOOL "Use PlutoSVG color emoji support" FORCE)
+set(SDLTTF_SAMPLES OFF CACHE BOOL "Build SDL_ttf samples" FORCE)
+set(SDLTTF_INSTALL OFF CACHE BOOL "Generate SDL_ttf install targets" FORCE)
+add_subdirectory(SDL_ttf EXCLUDE_FROM_ALL)
+
+set(EMBEDDED_FONT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_font.c")
+add_custom_command(
+    OUTPUT "${EMBEDDED_FONT_SOURCE}"
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/resources/font/MicroSoft_YaHei.ttf"
+        "-DOUTPUT_FILE=${EMBEDDED_FONT_SOURCE}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/font/MicroSoft_YaHei.ttf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+    COMMENT "Embedding MicroSoft_YaHei.ttf into the executable"
+    VERBATIM
+)
+
+add_executable(sdl_hello src/main.c "${EMBEDDED_FONT_SOURCE}")
+target_link_libraries(sdl_hello PRIVATE SDL3::SDL3-static SDL3_ttf::SDL3_ttf-static)
 
 if(MINGW)
     # Keep MinGW runtime libraries out of the deployment package.
