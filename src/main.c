@@ -1,83 +1,93 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <SDL3_ttf/SDL_ttf.h>
 
-/* Defined by the C source generated from the TTF at build time. */
-extern const unsigned char __embedded_font[];
-extern const size_t __embedded_font_size;
+#define WINDOW_WIDTH 800
+#define WINDOW_HEIGHT 500
+#define IMAGE_BOX_SIZE 200.0f
+#define IMAGE_PATH "D:\\underway\\SDL_learn\\resources\\img\\test.png"
 
 /**
- * @note SDL_Surface 是便于 CPU 读取、修改和转换的二维像素缓冲区。
- * @note SDL_Texture 是便于渲染器高效显示的图像资源。
+ * @brief 绘制图片
+ * @param image_surface 图片表面
+ * @param image_texture 图片纹理
+ * @param width 图片宽度
+ * @param height 图片高度
 */
+static void draw_img(SDL_Surface *image_surface, SDL_Texture *image_texture,
+                     uint32_t width, uint32_t height)
+{
+    SDL_Renderer *renderer = NULL;
+    SDL_FRect destination = { 0 };
+    float scale_x;
+    float scale_y;
+    float scale;
 
+    if (!image_surface || !image_texture || width == 0 || height == 0) {
+        SDL_Log("draw_img received invalid arguments");
+        return;
+    }
+
+    renderer = SDL_GetRendererFromTexture(image_texture);
+    if (!renderer) {
+        SDL_Log("Failed to get renderer from texture: %s", SDL_GetError());
+        return;
+    }
+
+    /* 将图片完整地等比缩放到 width x height 的边界框内。 */
+    scale_x = (float)width / (float)image_surface->w;
+    scale_y = (float)height / (float)image_surface->h;
+    scale = SDL_min(scale_x, scale_y);
+
+    destination.w = (float)image_surface->w * scale;
+    destination.h = (float)image_surface->h * scale;
+    destination.x = ((float)WINDOW_WIDTH - destination.w) / 2.0f;
+    destination.y = ((float)WINDOW_HEIGHT - destination.h) / 2.0f;
+
+    SDL_SetTextureScaleMode(image_texture, SDL_SCALEMODE_LINEAR);
+    SDL_SetRenderDrawColor(renderer, 30, 30, 30, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderTexture(renderer, image_texture, NULL, &destination);
+    SDL_RenderPresent(renderer);
+}
 
 int main(int argc, char *argv[])
 {
     SDL_Window *window = NULL;
     SDL_Renderer *renderer = NULL;
-    SDL_IOStream *font_stream = NULL;
-    TTF_Font *font = NULL;
-    SDL_Surface *text_surface = NULL;
-    SDL_Texture *text_texture = NULL;
+    SDL_Surface *image_surface = NULL;
+    SDL_Texture *image_texture = NULL;
     bool running = true;
+    bool success = false;
 
     (void)argc;
     (void)argv;
 
-    if (!SDL_Init(SDL_INIT_VIDEO) || !TTF_Init()) {
-        SDL_Log("Initialization failed: %s", SDL_GetError());
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        SDL_Log("SDL_Init failed: %s", SDL_GetError());
         goto cleanup;
     }
 
-    if (!SDL_CreateWindowAndRenderer("helloWorld", 800, 500, 0,
+    if (!SDL_CreateWindowAndRenderer("Image Demo", WINDOW_WIDTH, WINDOW_HEIGHT, 0,
                                      &window, &renderer)) {
         SDL_Log("Window creation failed: %s", SDL_GetError());
         goto cleanup;
     }
 
-    /* 直接打开内存中的ttf文件流 */
-    font_stream = SDL_IOFromConstMem(__embedded_font, __embedded_font_size);
-
-    /* 打开字体 */
-    font = TTF_OpenFontIO(font_stream, true, 36.0f);
-    if (!font) {
-        SDL_Log("TTF_OpenFontIO failed: %s", SDL_GetError());
+    image_surface = SDL_LoadPNG(IMAGE_PATH);
+    if (!image_surface) {
+        SDL_Log("Failed to load %s: %s", IMAGE_PATH, SDL_GetError());
         goto cleanup;
     }
 
-    /* 关闭文件流 */
-    font_stream = NULL; /* TTF_CloseFont will close it. */
-
-    /* 渲染文本到surface */
-    text_surface = TTF_RenderText_Blended(font, "HelloWorld", 0,
-                                          (SDL_Color){ 255, 255, 255, 128 });
-    if (!text_surface )
-    {
-        SDL_Log("Text rendering failed: %s", SDL_GetError());
+    image_texture = SDL_CreateTextureFromSurface(renderer, image_surface);
+    if (!image_texture) {
+        SDL_Log("Texture creation failed: %s", SDL_GetError());
         goto cleanup;
     }
 
-    /* 创建纹理(texture) */
-    text_texture = SDL_CreateTextureFromSurface(renderer, text_surface);
-
-    /* 使用黑色清空渲染器 */
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    /* 设置纹理的渲染位置和大小 */
-    SDL_FRect destination;
-    memset(&destination, 0, sizeof(SDL_FRect));
-    destination.x = (800.0f - text_surface->w) / 2.0f;
-    destination.y = (500.0f - text_surface->h) / 2.0f;
-    destination.w = (float)text_surface->w;
-    destination.h = (float)text_surface->h;
-
-    /* 使用渲染器渲染纹理 */
-    SDL_RenderTexture(renderer, text_texture, NULL, &destination);
-
-    /* 显示渲染器内容到窗口 */
-    SDL_RenderPresent(renderer);
+    draw_img(image_surface, image_texture,
+             (uint32_t)IMAGE_BOX_SIZE, (uint32_t)IMAGE_BOX_SIZE);
+    success = true;
 
     while (running) {
         SDL_Event event;
@@ -87,18 +97,14 @@ int main(int argc, char *argv[])
                 running = false;
             }
         }
-        
         SDL_Delay(16);
     }
 
 cleanup:
-    SDL_DestroyTexture(text_texture);
-    SDL_DestroySurface(text_surface);
-    TTF_CloseFont(font);
-    if (font_stream) SDL_CloseIO(font_stream);
+    SDL_DestroyTexture(image_texture);
+    SDL_DestroySurface(image_surface);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    TTF_Quit();
     SDL_Quit();
-    return text_texture ? 0 : 1;
+    return success ? 0 : 1;
 }
