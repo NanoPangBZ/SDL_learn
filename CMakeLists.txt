@@ -32,6 +32,7 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}"
         "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/resources/font/MicroSoft_YaHei.ttf"
         "-DOUTPUT_FILE=${EMBEDDED_FONT_SOURCE}"
+        "-DSYMBOL_NAME=font"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/font/MicroSoft_YaHei.ttf"
@@ -40,7 +41,23 @@ add_custom_command(
     VERBATIM
 )
 
-add_executable(sdl_hello src/main.c "${EMBEDDED_FONT_SOURCE}")
+set(EMBEDDED_MP3_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_mp3.c")
+add_custom_command(
+    OUTPUT "${EMBEDDED_MP3_SOURCE}"
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/resources/sound/pianos.mp3"
+        "-DOUTPUT_FILE=${EMBEDDED_MP3_SOURCE}"
+        "-DSYMBOL_NAME=mp3"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/sound/pianos.mp3"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+    COMMENT "Embedding pianos.mp3 into the executable"
+    VERBATIM
+)
+
+add_executable(sdl_hello src/main.c "${EMBEDDED_FONT_SOURCE}" "${EMBEDDED_MP3_SOURCE}")
+target_include_directories(sdl_hello PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dr_libs")
 target_link_libraries(sdl_hello PRIVATE SDL3::SDL3-static SDL3_ttf::SDL3_ttf-static)
 
 if(MINGW)

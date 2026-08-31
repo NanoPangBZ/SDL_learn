@@ -1,5 +1,5 @@
-if(NOT DEFINED INPUT_FILE OR NOT DEFINED OUTPUT_FILE)
-    message(FATAL_ERROR "INPUT_FILE and OUTPUT_FILE are required")
+if(NOT DEFINED INPUT_FILE OR NOT DEFINED OUTPUT_FILE OR NOT DEFINED SYMBOL_NAME)
+    message(FATAL_ERROR "INPUT_FILE, OUTPUT_FILE and SYMBOL_NAME are required")
 endif()
 
 get_filename_component(output_directory "${OUTPUT_FILE}" DIRECTORY)
@@ -12,8 +12,8 @@ string(REGEX REPLACE "([0-9a-fA-F][0-9a-fA-F])" "0x\\1," binary_bytes "${binary_
 
 file(WRITE "${OUTPUT_FILE}"
     "#include <stddef.h>\n\n"
-    "const unsigned char __embedded_font[] = {\n"
+    "const unsigned char __embedded_${SYMBOL_NAME}[] = {\n"
     "${binary_bytes}\n"
     "};\n\n"
-    "const size_t __embedded_font_size = sizeof(__embedded_font);\n"
+    "const size_t __embedded_${SYMBOL_NAME}_size = sizeof(__embedded_${SYMBOL_NAME});\n"
 )

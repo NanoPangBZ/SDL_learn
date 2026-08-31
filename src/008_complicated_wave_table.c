@@ -2,14 +2,8 @@
 #include <SDL3/SDL_main.h>
 #include <SDL3_ttf/SDL_ttf.h>
 
-#define DR_MP3_IMPLEMENTATION
-#define DR_MP3_NO_STDIO
-#include "dr_mp3.h"
-
 extern const unsigned char __embedded_font[];
 extern const size_t __embedded_font_size;
-extern const unsigned char __embedded_mp3[];
-extern const size_t __embedded_mp3_size;
 
 #define BACKGROUND_COLOR    0, 0, 0
 #define WAVE_COLOR          255, 255, 255
@@ -18,8 +12,6 @@ extern const size_t __embedded_mp3_size;
 #define SPECTRUM_POINT_COUNT 2001
 #define SPECTRUM_LABEL_STEP 50
 #define CURVE_SEGMENTS_PER_POINT 8
-#define FFT_WINDOW_SIZE 16384
-#define FFT_HOP_SIZE 1024
 
 /**
  * @brief 填充正弦波音频帧缓冲
@@ -247,89 +239,56 @@ typedef struct fre_point_t{
  * @param fre_point_buffer 频率点缓冲
  * @param fre_point_count 频率点数
 */
-static void wave_fft(const float *wave_buffer, int sample_rate,
-                     fre_point_t *fre_point_buffer, uint32_t fre_point_count)
+static void wave_fft( float* wave_buffer, uint32_t point_count , int sample_rate , fre_point_t* fre_point_buffer , uint32_t fre_point_count )
 {
-    static float real[FFT_WINDOW_SIZE];
-    static float imaginary[FFT_WINDOW_SIZE];
-    uint32_t i;
-    uint32_t reversed = 0;
+    uint32_t point_index;
 
-    if (wave_buffer == NULL || fre_point_buffer == NULL || sample_rate <= 0) {
+    if (fre_point_buffer == NULL) {
         return;
     }
 
-    /* Hann 窗减少频谱泄漏；16384 点窗口比原来的约 4410 点窗口更宽。 */
-    for (i = 0; i < FFT_WINDOW_SIZE; ++i) {
-        const float window = 0.5f - 0.5f * SDL_cosf(
-            2.0f * SDL_PI_F * (float)i / (float)(FFT_WINDOW_SIZE - 1));
-        real[i] = wave_buffer[i] * window;
-        imaginary[i] = 0.0f;
-    }
+    /*
+     * frequency 由调用方指定，因此它不一定落在普通 FFT 的整数频率桶上。
+     * 这里使用 Goertzel 算法计算每个指定频率处的 DFT，避免计算无用频点。
+     */
+    for (point_index = 0; point_index < fre_point_count; ++point_index) {
+        const float frequency = fre_point_buffer[point_index].frequency;
+        float previous = 0.0f;
+        float previous_previous = 0.0f;
+        float coefficient;
+        float omega;
+        float real;
+        float imaginary;
+        float magnitude;
+        float scale;
+        uint32_t sample_index;
 
-    /* 原地 radix-2 Cooley-Tukey FFT：O(N log N)。 */
-    for (i = 1; i < FFT_WINDOW_SIZE; ++i) {
-        uint32_t bit = FFT_WINDOW_SIZE >> 1;
-        while (reversed & bit) {
-            reversed ^= bit;
-            bit >>= 1;
+        fre_point_buffer[point_index].amplitude = 0.0f;
+
+        if (wave_buffer == NULL || point_count == 0 || sample_rate <= 0 ||
+            frequency < 0.0f || frequency > (float)sample_rate * 0.5f) {
+            continue;
         }
-        reversed ^= bit;
-        if (i < reversed) {
-            const float temporary_real = real[i];
-            const float temporary_imaginary = imaginary[i];
-            real[i] = real[reversed];
-            imaginary[i] = imaginary[reversed];
-            real[reversed] = temporary_real;
-            imaginary[reversed] = temporary_imaginary;
+
+        omega = 2.0f * SDL_PI_F * frequency / (float)sample_rate;
+        coefficient = 2.0f * SDL_cosf(omega);
+
+        for (sample_index = 0; sample_index < point_count; ++sample_index) {
+            const float current = wave_buffer[sample_index] +
+                                  coefficient * previous - previous_previous;
+            previous_previous = previous;
+            previous = current;
         }
-    }
 
-    for (uint32_t length = 2; length <= FFT_WINDOW_SIZE; length <<= 1) {
-        const float angle = -2.0f * SDL_PI_F / (float)length;
-        const float step_real = SDL_cosf(angle);
-        const float step_imaginary = SDL_sinf(angle);
-        const uint32_t half_length = length >> 1;
+        real = previous - previous_previous * SDL_cosf(omega);
+        imaginary = previous_previous * SDL_sinf(omega);
+        magnitude = SDL_sqrtf(real * real + imaginary * imaginary);
 
-        for (i = 0; i < FFT_WINDOW_SIZE; i += length) {
-            float twiddle_real = 1.0f;
-            float twiddle_imaginary = 0.0f;
-            for (uint32_t j = 0; j < half_length; ++j) {
-                const uint32_t even = i + j;
-                const uint32_t odd = even + half_length;
-                const float odd_real = real[odd] * twiddle_real -
-                                       imaginary[odd] * twiddle_imaginary;
-                const float odd_imaginary = real[odd] * twiddle_imaginary +
-                                            imaginary[odd] * twiddle_real;
-                const float next_twiddle_real = twiddle_real * step_real -
-                                                twiddle_imaginary * step_imaginary;
-
-                real[odd] = real[even] - odd_real;
-                imaginary[odd] = imaginary[even] - odd_imaginary;
-                real[even] += odd_real;
-                imaginary[even] += odd_imaginary;
-                twiddle_imaginary = twiddle_real * step_imaginary +
-                                    twiddle_imaginary * step_real;
-                twiddle_real = next_twiddle_real;
-            }
-        }
-    }
-
-    for (i = 0; i < fre_point_count; ++i) {
-        const float exact_bin = fre_point_buffer[i].frequency *
-                                (float)FFT_WINDOW_SIZE / (float)sample_rate;
-        const uint32_t lower_bin = (uint32_t)exact_bin;
-        const uint32_t upper_bin = SDL_min(lower_bin + 1,
-                                           FFT_WINDOW_SIZE / 2);
-        const float fraction = exact_bin - (float)lower_bin;
-        const float lower_magnitude = SDL_sqrtf(real[lower_bin] * real[lower_bin] +
-                                                imaginary[lower_bin] * imaginary[lower_bin]);
-        const float upper_magnitude = SDL_sqrtf(real[upper_bin] * real[upper_bin] +
-                                                imaginary[upper_bin] * imaginary[upper_bin]);
-        /* Hann 窗的 coherent gain 约为 0.5，单边谱比例因此为 4/N。 */
-        fre_point_buffer[i].amplitude =
-            (lower_magnitude + (upper_magnitude - lower_magnitude) * fraction) *
-            (4.0f / (float)FFT_WINDOW_SIZE);
+        /* 单边幅度谱：DC 和 Nyquist 不需要乘 2。 */
+        scale = (frequency == 0.0f || frequency == (float)sample_rate * 0.5f)
+                    ? 1.0f / (float)point_count
+                    : 2.0f / (float)point_count;
+        fre_point_buffer[point_index].amplitude = magnitude * scale;
     }
 }
 
@@ -340,10 +299,6 @@ int main(int argc, char *argv[])
     SDL_AudioStream *stream = NULL;
     TTF_Font *font = NULL;
     SDL_AudioSpec spec;
-    drmp3_config mp3_config;
-    drmp3_uint64 total_pcm_frames = 0;
-    drmp3_uint64 next_pcm_frame = 0;
-    float *pcm_frames = NULL;
     bool running = true;
     bool fullscreen = false;
 
@@ -357,7 +312,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!SDL_CreateWindowAndRenderer("SDL3 Embedded MP3 Player", 800, 500,
+    if (!SDL_CreateWindowAndRenderer("SDL3 100Hz Sine", 800, 500,
                                      SDL_WINDOW_RESIZABLE,
                                      &window, &renderer)) {
         SDL_Log("SDL_CreateWindowAndRenderer failed: %s", SDL_GetError());
@@ -378,29 +333,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* 直接从链接进可执行文件的 MP3 字节解码为 32 位浮点 PCM。 */
-    pcm_frames = drmp3_open_memory_and_read_pcm_frames_f32(
-        __embedded_mp3, __embedded_mp3_size, &mp3_config,
-        &total_pcm_frames, NULL);
-    if (pcm_frames == NULL || total_pcm_frames == 0 ||
-        mp3_config.channels == 0 || mp3_config.sampleRate == 0) {
-        SDL_Log("Failed to decode embedded pianos.mp3");
-        TTF_CloseFont(font);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        TTF_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    spec.channels = (int)mp3_config.channels;
+    /* 创建音频流 , 32位浮点, 1通道, 44.1kHz采样率 */
+    spec.channels = 1;
     spec.format = SDL_AUDIO_F32;
-    spec.freq = (int)mp3_config.sampleRate;
+    spec.freq = 44100;
     stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
                                        &spec, NULL, NULL);
     if (!stream) {
         SDL_Log("SDL_OpenAudioDeviceStream failed: %s", SDL_GetError());
-        drmp3_free(pcm_frames, NULL);
         TTF_CloseFont(font);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -408,13 +348,20 @@ int main(int argc, char *argv[])
         SDL_Quit();
         return 1;
     }
-    SDL_Log("Decoded embedded MP3: %u Hz, %u channels, %.2f seconds",
-            mp3_config.sampleRate, mp3_config.channels,
-            (double)total_pcm_frames / (double)mp3_config.sampleRate);
     SDL_ResumeAudioStreamDevice(stream);
 
-    /* 16384 点分析窗口，每次滑动 1024 点；44.1kHz 下约刷新 43 次/秒。 */
-    static float spectrum_input[FFT_WINDOW_SIZE];
+    /* 音频帧缓冲 */
+    static float audio_frame_buffer[ 4410 ];
+
+    static float ch0_audio_frame_buffer[ 4410 ];
+    static float ch1_audio_frame_buffer[ 4410 ];
+    static float ch2_audio_frame_buffer[ 4410 ];
+    static float ch3_audio_frame_buffer[ 4410 ];
+    
+    float ch0_audio_sin_position = 0;
+    float ch1_audio_sin_position = 1;
+    float ch2_audio_sin_position = 2;
+    float ch3_audio_square_position = 0;
     fre_point_t frequency_points[SPECTRUM_POINT_COUNT];
     float spectrum_wave[SPECTRUM_POINT_COUNT];
 
@@ -442,29 +389,19 @@ int main(int argc, char *argv[])
             }
         }
 
-        /* 小步长提交音频，同时推动频谱滑动窗口。 */
-        if (SDL_GetAudioStreamQueued(stream) <
-            FFT_HOP_SIZE * spec.channels * (int)sizeof(float) * 2)
+        /* 当前SDL音频流中剩余的音频小于一帧的一半，则提交新的音频帧缓冲 */
+        if (SDL_GetAudioStreamQueued(stream) < (spec.freq * (int)sizeof(float)) / 2)
         {
-            const drmp3_uint64 remaining = total_pcm_frames - next_pcm_frame;
-            const drmp3_uint64 frames_to_queue = SDL_min(
-                (drmp3_uint64)FFT_HOP_SIZE, remaining);
-            const float *chunk = pcm_frames + next_pcm_frame * mp3_config.channels;
-
-            SDL_memmove(spectrum_input,
-                        spectrum_input + frames_to_queue,
-                        (FFT_WINDOW_SIZE - (size_t)frames_to_queue) * sizeof(float));
-            for (drmp3_uint64 i = 0; i < frames_to_queue; ++i) {
-                float mixed = 0.0f;
-                for (drmp3_uint32 channel = 0; channel < mp3_config.channels; ++channel) {
-                    mixed += chunk[i * mp3_config.channels + channel];
-                }
-                spectrum_input[FFT_WINDOW_SIZE - (size_t)frames_to_queue + (size_t)i] =
-                    mixed / (float)mp3_config.channels;
-            }
-
-            wave_fft(spectrum_input, spec.freq,
-                     frequency_points, SPECTRUM_POINT_COUNT);
+            ch0_audio_sin_position = fill_sine_audio_frame_buffer( ch0_audio_frame_buffer , spec.freq , 100 , ch0_audio_sin_position , sizeof(ch0_audio_frame_buffer) / sizeof(float) , 0.5 );
+            ch1_audio_sin_position = fill_sine_audio_frame_buffer( ch1_audio_frame_buffer , spec.freq , 400 , ch1_audio_sin_position , sizeof(ch1_audio_frame_buffer) / sizeof(float) , 0.2 );
+            ch2_audio_sin_position = fill_sine_audio_frame_buffer( ch2_audio_frame_buffer , spec.freq , 110 , ch2_audio_sin_position , sizeof(ch2_audio_frame_buffer) / sizeof(float) , 0.7 );
+            ch3_audio_square_position = fill_square_audio_frame_buffer( ch3_audio_frame_buffer , spec.freq , 110 , ch3_audio_square_position , sizeof(ch3_audio_frame_buffer) / sizeof(float) , 1.0 );
+            audio_mix( ch0_audio_frame_buffer , ch1_audio_frame_buffer , audio_frame_buffer , sizeof(audio_frame_buffer) / sizeof(float) );
+            audio_mix( audio_frame_buffer , ch2_audio_frame_buffer , audio_frame_buffer , sizeof(audio_frame_buffer) / sizeof(float) );
+            audio_mix( audio_frame_buffer , ch3_audio_frame_buffer , audio_frame_buffer , sizeof(audio_frame_buffer) / sizeof(float) );
+            wave_fft(audio_frame_buffer,
+                     sizeof(audio_frame_buffer) / sizeof(audio_frame_buffer[0]),
+                     spec.freq, frequency_points, SPECTRUM_POINT_COUNT);
 
             for (uint32_t i = 0; i < SPECTRUM_POINT_COUNT; ++i) {
                 /* draw_wave 使用 [-1, 1]，将幅值 [0, 1] 映射为底部到顶部。 */
@@ -488,23 +425,13 @@ int main(int argc, char *argv[])
                 }
             }
             SDL_RenderPresent(renderer);
-            if (!SDL_PutAudioStreamData(
-                    stream, chunk,
-                    (int)(frames_to_queue * mp3_config.channels * sizeof(float)))) {
-                SDL_Log("SDL_PutAudioStreamData failed: %s", SDL_GetError());
-                running = false;
-            }
-            next_pcm_frame += frames_to_queue;
-            if (next_pcm_frame == total_pcm_frames) {
-                next_pcm_frame = 0;
-            }
+            SDL_PutAudioStreamData(stream, audio_frame_buffer, (int)sizeof(audio_frame_buffer));
         }
 
-        SDL_DelayNS(SDL_MS_TO_NS(1));
+        SDL_DelayNS( 100 );
     }
 
     SDL_DestroyAudioStream(stream);
-    drmp3_free(pcm_frames, NULL);
     TTF_CloseFont(font);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
