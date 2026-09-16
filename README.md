@@ -6,7 +6,7 @@
 
 ## 简介
 
-本项目直接将 SDL 源码放在 `SDL/` 目录中，通过 CMake 将 SDL 与示例程序一起构建。项目不依赖系统中预先安装的 SDL，便于在不同开发环境中复现构建过程。
+本项目直接将 SDL 与 SDL_ttf 源码放在 `SDL/`、`SDL_ttf/` 目录中，通过 CMake 与示例程序一起构建。不依赖系统中预先安装的 SDL，便于在不同开发环境中复现构建过程。
 
 示例程序使用 SDL 初始化视频子系统，创建窗口并运行事件循环。程序源码位于 `src/main.c`，使用 C 编写，而不是 C++。
 
@@ -26,6 +26,7 @@
 ├── .vscode/              # Windows 下的构建任务和 GDB 调试配置
 ├── build/                # CMake 构建输出目录
 ├── SDL/                  # SDL3 源码
+├── SDL_ttf/              # SDL3_ttf 源码（需自行获取，见下文）
 ├── doc/                  # 项目文档
 ├── script/               # 构建脚本
 ├── src/                  # 示例程序源码
@@ -33,7 +34,35 @@
 └── README.md             # 项目说明
 ```
 
+## 准备 SDL_ttf 依赖
+
+CMake 会通过 `add_subdirectory(SDL_ttf)` 静态编译 **SDL3_ttf** 与内嵌的 **FreeType**（示例中的 TTF 文字渲染依赖此项）。仓库默认**不包含** `SDL_ttf/` 目录，首次构建前需要拉取源码并下载 vendored 第三方库。
+
+在项目根目录执行：
+
+```sh
+git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git SDL_ttf
+```
+
+然后下载 SDL_ttf 自带的依赖（至少包含 FreeType；本工程在 CMake 中关闭了 HarfBuzz 与 PlutoSVG，一般无需关心后两者是否下载成功）：
+
+**Windows（PowerShell）：**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File SDL_ttf\external\Get-GitModules.ps1
+```
+
+**Linux、macOS 等：**
+
+```sh
+cd SDL_ttf && ./external/download.sh && cd ..
+```
+
+若 CMake 报错 `No freetype sources found`，说明上述下载步骤未成功，请检查网络后重试。完成后目录中应存在 `SDL_ttf/external/freetype/CMakeLists.txt`。
+
 ## Windows 构建
+
+请先完成 [准备 SDL_ttf 依赖](#准备-sdl_ttf-依赖)。
 
 请确保已安装并配置以下工具：
 
@@ -59,7 +88,7 @@ build\release\bin\sdl_hello.exe
 
 ## Linux、macOS 及其他类 Unix 环境
 
-请先安装 CMake 和可用的 C 编译器，然后在项目根目录执行：
+请先完成 [准备 SDL_ttf 依赖](#准备-sdl_ttf-依赖)，并安装 CMake 与可用的 C 编译器，然后在项目根目录执行：
 
 ```sh
 ./script/build_debug.sh
