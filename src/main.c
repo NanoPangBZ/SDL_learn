@@ -2,17 +2,10 @@
 #include <SDL3/SDL_main.h>
 #include <SDL3_ttf/SDL_ttf.h>
 
-#define DR_MP3_IMPLEMENTATION
-#define DR_MP3_NO_STDIO
-#include "dr_mp3.h"
-
 extern const unsigned char __embedded_font[];
 extern const size_t __embedded_font_size;
-extern const unsigned char __embedded_mp3[];
-extern const size_t __embedded_mp3_size;
 
 #define BACKGROUND_COLOR    0, 0, 0
-#define WAVE_COLOR          255, 255, 255
 #define SPECTRUM_MAX_FREQUENCY 1000
 #define SPECTRUM_FREQUENCY_STEP 0.5f
 #define SPECTRUM_POINT_COUNT 2001
@@ -20,81 +13,8 @@ extern const size_t __embedded_mp3_size;
 #define CURVE_SEGMENTS_PER_POINT 8
 #define FFT_WINDOW_SIZE 16384
 #define FFT_HOP_SIZE 1024
-
-/**
- * @brief 填充正弦波音频帧缓冲
- * @param audio_frame_buffer 音频帧缓冲
- * @param sample_rate 采样率
- * @param sine_freq_hz 正弦波频率
- * @param position 当前相位（弧度）
- * @param frame_point_count 帧点数
- * @param scale 幅度缩放
- * @return 最后一点之后的相位（弧度，已限制在 [0, 2π)）
-*/
-static float fill_sine_audio_frame_buffer(float *audio_frame_buffer, int sample_rate,
-                                          int sine_freq_hz, float position,
-                                          uint32_t frame_point_count,float scale)
-{
-    const float phase_delta = 2.0f * SDL_PI_F * (float)sine_freq_hz / (float)sample_rate;
-    float *p = audio_frame_buffer;
-
-    for (uint32_t i = 0; i < frame_point_count; i++) {
-        *p++ = SDL_sinf(position) * scale;
-        position += phase_delta;
-        if (position >= 2.0f * SDL_PI_F) {
-            position -= 2.0f * SDL_PI_F;
-        }
-    }
-
-    return position;
-}
-
-/**
- * @brief 填充方波音频帧缓冲
- */
-static float fill_square_audio_frame_buffer(float *audio_frame_buffer, int sample_rate,
-                                            int square_freq_hz, float position,
-                                            uint32_t frame_point_count, float scale)
-{
-    const float phase_delta = 2.0f * SDL_PI_F * (float)square_freq_hz /
-                              (float)sample_rate;
-
-    for (uint32_t i = 0; i < frame_point_count; ++i) {
-        audio_frame_buffer[i] = position < SDL_PI_F ? scale : -scale;
-        position += phase_delta;
-        if (position >= 2.0f * SDL_PI_F) {
-            position -= 2.0f * SDL_PI_F;
-        }
-    }
-
-    return position;
-}
-
-/**
- * @brief 音频混合
- * @param frame_buffer_1 音频帧缓冲1
- * @param frame_buffer_2 音频帧缓冲2
- * @param frame_buffer_out 输出音频帧缓冲
- * @param frame_point_count 帧点数
-*/
-static void audio_mix( float* frame_buffer_1 ,float* frame_buffer_2 , float* frame_buffer_out , uint32_t frame_point_count )
-{
-    float *p_1 = frame_buffer_1;
-    float *p_2 = frame_buffer_2;
-    float *p_out = frame_buffer_out;
-
-    for (uint32_t i = 0; i < frame_point_count; i++) {
-        p_out[i] = p_1[i] + p_2[i];
-        if( p_out[i] > 1.0f )
-        {
-            p_out[i] = 1.0f;
-        }
-        else if( p_out[i] < -1.0f )
-        {
-            p_out[i] = -1.0f;
-        }
-    }
-}
+#define CAPTURE_CHANNELS 1
+#define SPECTRUM_AMPLITUDE_GAIN 20.0f
 
 /**
  * @brief 绘制波形
@@ -232,6 +152,41 @@ static void draw_wave(SDL_Renderer *renderer, float *wave, uint32_t wave_count,
 }
 
 /**
+ * @brief 在左上角绘制峰值频率文字
+ */
+static void draw_peak_frequency(SDL_Renderer *renderer, TTF_Font *font,
+                                float peak_frequency, float peak_amplitude)
+{
+    char label[64];
+    SDL_Surface *surface;
+    SDL_Texture *texture;
+    SDL_FRect destination;
+
+    if (font == NULL) {
+        return;
+    }
+
+    SDL_snprintf(label, sizeof(label), "Peak: %.1f Hz  Amp: %.3f",
+                 peak_frequency, peak_amplitude);
+    surface = TTF_RenderText_Blended(font, label, 0,
+                                     (SDL_Color){ 240, 240, 240, 255 });
+    if (surface == NULL) {
+        return;
+    }
+
+    texture = SDL_CreateTextureFromSurface(renderer, surface);
+    if (texture != NULL) {
+        destination.x = 12.0f;
+        destination.y = 8.0f;
+        destination.w = (float)surface->w;
+        destination.h = (float)surface->h;
+        SDL_RenderTexture(renderer, texture, NULL, &destination);
+        SDL_DestroyTexture(texture);
+    }
+    SDL_DestroySurface(surface);
+}
+
+/**
  * @brief 频率点结构体
 */
 typedef struct fre_point_t{
@@ -242,7 +197,6 @@ typedef struct fre_point_t{
 /**
  * @brief FFT
  * @param wave_buffer 波形缓冲
- * @param point_count 波形点数
  * @param sample_rate 采样率
  * @param fre_point_buffer 频率点缓冲
  * @param fre_point_count 频率点数
@@ -333,6 +287,47 @@ static void wave_fft(const float *wave_buffer, int sample_rate,
     }
 }
 
+/**
+ * @brief 查找与默认播放设备同名的环回录制设备（WASAPI loopback）
+ */
+static SDL_AudioDeviceID find_system_loopback_device(void)
+{
+    const char *playback_name =
+        SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    int recording_count = 0;
+    SDL_AudioDeviceID *recording_devices =
+        SDL_GetAudioRecordingDevices(&recording_count);
+    SDL_AudioDeviceID loopback = 0;
+    int i;
+
+    if (recording_devices == NULL || recording_count <= 0) {
+        SDL_Log("No recording devices available: %s", SDL_GetError());
+        return 0;
+    }
+
+    if (playback_name != NULL) {
+        for (i = 0; i < recording_count; ++i) {
+            const char *name = SDL_GetAudioDeviceName(recording_devices[i]);
+            if (name != NULL && SDL_strcmp(name, playback_name) == 0) {
+                loopback = recording_devices[i];
+                break;
+            }
+        }
+    }
+
+    if (loopback == 0) {
+        SDL_Log("No loopback device matching playback '%s'. "
+                "Available recording devices:",
+                playback_name != NULL ? playback_name : "(unknown)");
+        for (i = 0; i < recording_count; ++i) {
+            SDL_Log("  [%d] %s", i, SDL_GetAudioDeviceName(recording_devices[i]));
+        }
+    }
+
+    SDL_free(recording_devices);
+    return loopback;
+}
+
 int main(int argc, char *argv[])
 {
     SDL_Window *window = NULL;
@@ -340,15 +335,23 @@ int main(int argc, char *argv[])
     SDL_AudioStream *stream = NULL;
     TTF_Font *font = NULL;
     SDL_AudioSpec spec;
-    drmp3_config mp3_config;
-    drmp3_uint64 total_pcm_frames = 0;
-    drmp3_uint64 next_pcm_frame = 0;
-    float *pcm_frames = NULL;
+    SDL_AudioDeviceID loopback_device = 0;
     bool running = true;
     bool fullscreen = false;
+    float peak_frequency = 0.0f;
+    float peak_amplitude = 0.0f;
+
+    /* 16384 点分析窗口，每次滑动 1024 点。 */
+    static float spectrum_input[FFT_WINDOW_SIZE];
+    static float capture_chunk[FFT_HOP_SIZE * CAPTURE_CHANNELS];
+    fre_point_t frequency_points[SPECTRUM_POINT_COUNT];
+    float spectrum_wave[SPECTRUM_POINT_COUNT];
 
     (void)argc;
     (void)argv;
+
+    /* Windows WASAPI：把播放设备也列为录制设备，从而启用系统输出环回。 */
+    SDL_SetHint(SDL_HINT_AUDIO_INCLUDE_MONITORS, "1");
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) || !TTF_Init()) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
@@ -357,7 +360,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!SDL_CreateWindowAndRenderer("SDL3 Embedded MP3 Player", 800, 500,
+    if (!SDL_CreateWindowAndRenderer("SDL3 System Audio Spectrum", 800, 500,
                                      SDL_WINDOW_RESIZABLE,
                                      &window, &renderer)) {
         SDL_Log("SDL_CreateWindowAndRenderer failed: %s", SDL_GetError());
@@ -378,13 +381,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* 直接从链接进可执行文件的 MP3 字节解码为 32 位浮点 PCM。 */
-    pcm_frames = drmp3_open_memory_and_read_pcm_frames_f32(
-        __embedded_mp3, __embedded_mp3_size, &mp3_config,
-        &total_pcm_frames, NULL);
-    if (pcm_frames == NULL || total_pcm_frames == 0 ||
-        mp3_config.channels == 0 || mp3_config.sampleRate == 0) {
-        SDL_Log("Failed to decode embedded pianos.mp3");
+    loopback_device = find_system_loopback_device();
+    if (loopback_device == 0) {
+        SDL_Log("Failed to find system audio loopback device. "
+                "Set SDL_AUDIO_INCLUDE_MONITORS=1 before init (already set).");
         TTF_CloseFont(font);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -393,14 +393,23 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    spec.channels = (int)mp3_config.channels;
+    if (!SDL_GetAudioDeviceFormat(loopback_device, &spec, NULL)) {
+        SDL_Log("SDL_GetAudioDeviceFormat failed: %s", SDL_GetError());
+        TTF_CloseFont(font);
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+
+    /* 统一转换为单声道 F32，便于 FFT。 */
     spec.format = SDL_AUDIO_F32;
-    spec.freq = (int)mp3_config.sampleRate;
-    stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-                                       &spec, NULL, NULL);
+    spec.channels = CAPTURE_CHANNELS;
+
+    stream = SDL_OpenAudioDeviceStream(loopback_device, &spec, NULL, NULL);
     if (!stream) {
-        SDL_Log("SDL_OpenAudioDeviceStream failed: %s", SDL_GetError());
-        drmp3_free(pcm_frames, NULL);
+        SDL_Log("SDL_OpenAudioDeviceStream (loopback) failed: %s", SDL_GetError());
         TTF_CloseFont(font);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -408,15 +417,11 @@ int main(int argc, char *argv[])
         SDL_Quit();
         return 1;
     }
-    SDL_Log("Decoded embedded MP3: %u Hz, %u channels, %.2f seconds",
-            mp3_config.sampleRate, mp3_config.channels,
-            (double)total_pcm_frames / (double)mp3_config.sampleRate);
-    SDL_ResumeAudioStreamDevice(stream);
 
-    /* 16384 点分析窗口，每次滑动 1024 点；44.1kHz 下约刷新 43 次/秒。 */
-    static float spectrum_input[FFT_WINDOW_SIZE];
-    fre_point_t frequency_points[SPECTRUM_POINT_COUNT];
-    float spectrum_wave[SPECTRUM_POINT_COUNT];
+    SDL_Log("Capturing system audio: '%s', %d Hz, %d channels",
+            SDL_GetAudioDeviceName(loopback_device),
+            spec.freq, spec.channels);
+    SDL_ResumeAudioStreamDevice(stream);
 
     for (uint32_t i = 0; i < SPECTRUM_POINT_COUNT; ++i) {
         frequency_points[i].frequency = (float)(i * SPECTRUM_FREQUENCY_STEP);
@@ -426,6 +431,9 @@ int main(int argc, char *argv[])
 
     while (running) {
         SDL_Event event;
+        const int hop_bytes =
+            FFT_HOP_SIZE * CAPTURE_CHANNELS * (int)sizeof(float);
+        bool spectrum_updated = false;
 
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT ||
@@ -442,69 +450,64 @@ int main(int argc, char *argv[])
             }
         }
 
-        /* 小步长提交音频，同时推动频谱滑动窗口。 */
-        if (SDL_GetAudioStreamQueued(stream) <
-            FFT_HOP_SIZE * spec.channels * (int)sizeof(float) * 2)
-        {
-            const drmp3_uint64 remaining = total_pcm_frames - next_pcm_frame;
-            const drmp3_uint64 frames_to_queue = SDL_min(
-                (drmp3_uint64)FFT_HOP_SIZE, remaining);
-            const float *chunk = pcm_frames + next_pcm_frame * mp3_config.channels;
-
-            SDL_memmove(spectrum_input,
-                        spectrum_input + frames_to_queue,
-                        (FFT_WINDOW_SIZE - (size_t)frames_to_queue) * sizeof(float));
-            for (drmp3_uint64 i = 0; i < frames_to_queue; ++i) {
-                float mixed = 0.0f;
-                for (drmp3_uint32 channel = 0; channel < mp3_config.channels; ++channel) {
-                    mixed += chunk[i * mp3_config.channels + channel];
-                }
-                spectrum_input[FFT_WINDOW_SIZE - (size_t)frames_to_queue + (size_t)i] =
-                    mixed / (float)mp3_config.channels;
+        /* 尽量排空积压，只保留最新数据，保证频谱实时。 */
+        while (SDL_GetAudioStreamAvailable(stream) >= hop_bytes) {
+            const int got = SDL_GetAudioStreamData(stream, capture_chunk, hop_bytes);
+            if (got < hop_bytes) {
+                break;
             }
 
+            SDL_memmove(spectrum_input,
+                        spectrum_input + FFT_HOP_SIZE,
+                        (FFT_WINDOW_SIZE - FFT_HOP_SIZE) * sizeof(float));
+            SDL_memcpy(spectrum_input + (FFT_WINDOW_SIZE - FFT_HOP_SIZE),
+                       capture_chunk,
+                       FFT_HOP_SIZE * sizeof(float));
+            spectrum_updated = true;
+        }
+
+        if (spectrum_updated) {
             wave_fft(spectrum_input, spec.freq,
                      frequency_points, SPECTRUM_POINT_COUNT);
 
+            peak_frequency = 0.0f;
+            peak_amplitude = 0.0f;
             for (uint32_t i = 0; i < SPECTRUM_POINT_COUNT; ++i) {
+                const float scaled_amplitude = SDL_clamp(
+                    frequency_points[i].amplitude * SPECTRUM_AMPLITUDE_GAIN,
+                    0.0f, 1.0f);
                 /* draw_wave 使用 [-1, 1]，将幅值 [0, 1] 映射为底部到顶部。 */
-                float display_value = frequency_points[i].amplitude * 2.0f - 1.0f;
+                float display_value = scaled_amplitude * 2.0f - 1.0f;
                 spectrum_wave[i] = SDL_clamp(display_value, -1.0f, 1.0f);
-            }
-
-            SDL_SetRenderDrawColor(renderer, BACKGROUND_COLOR , 255 );
-            SDL_RenderClear(renderer);
-            {
-                int output_width;
-                int output_height;
-                const SDL_Color minimum_color = { 0, 70, 45, 255 };
-                const SDL_Color maximum_color = { 255, 0, 0, 255 };
-
-                if (SDL_GetRenderOutputSize(renderer, &output_width, &output_height) &&
-                    output_width > 0 && output_height > 0) {
-                    draw_wave(renderer, spectrum_wave, SPECTRUM_POINT_COUNT,
-                              (uint32_t)output_width, (uint32_t)output_height,
-                              0.0f, 0.0f, minimum_color, maximum_color, font);
+                if (scaled_amplitude > peak_amplitude) {
+                    peak_amplitude = scaled_amplitude;
+                    peak_frequency = frequency_points[i].frequency;
                 }
             }
-            SDL_RenderPresent(renderer);
-            if (!SDL_PutAudioStreamData(
-                    stream, chunk,
-                    (int)(frames_to_queue * mp3_config.channels * sizeof(float)))) {
-                SDL_Log("SDL_PutAudioStreamData failed: %s", SDL_GetError());
-                running = false;
-            }
-            next_pcm_frame += frames_to_queue;
-            if (next_pcm_frame == total_pcm_frames) {
-                next_pcm_frame = 0;
-            }
         }
+
+        SDL_SetRenderDrawColor(renderer, BACKGROUND_COLOR, 255);
+        SDL_RenderClear(renderer);
+        {
+            int output_width;
+            int output_height;
+            const SDL_Color minimum_color = { 0, 70, 45, 255 };
+            const SDL_Color maximum_color = { 255, 0, 0, 255 };
+
+            if (SDL_GetRenderOutputSize(renderer, &output_width, &output_height) &&
+                output_width > 0 && output_height > 0) {
+                draw_wave(renderer, spectrum_wave, SPECTRUM_POINT_COUNT,
+                          (uint32_t)output_width, (uint32_t)output_height,
+                          0.0f, 0.0f, minimum_color, maximum_color, font);
+            }
+            draw_peak_frequency(renderer, font, peak_frequency, peak_amplitude);
+        }
+        SDL_RenderPresent(renderer);
 
         SDL_DelayNS(SDL_MS_TO_NS(1));
     }
 
     SDL_DestroyAudioStream(stream);
-    drmp3_free(pcm_frames, NULL);
     TTF_CloseFont(font);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
